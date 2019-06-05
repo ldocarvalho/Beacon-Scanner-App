@@ -5,6 +5,7 @@ import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
@@ -13,13 +14,28 @@ import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.support.v4.app.ActivityCompat;
 import android.support.v4.content.ContextCompat;
+import android.support.v7.app.AlertDialog;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
+import android.util.Log;
 import android.view.View;
+import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.ListView;
 import android.widget.Toast;
+
+import org.eclipse.paho.android.service.MqttAndroidClient;
+import org.eclipse.paho.client.mqttv3.IMqttActionListener;
+import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken;
+import org.eclipse.paho.client.mqttv3.IMqttToken;
+import org.eclipse.paho.client.mqttv3.MqttCallback;
+import org.eclipse.paho.client.mqttv3.MqttClient;
+import org.eclipse.paho.client.mqttv3.MqttConnectOptions;
+import org.eclipse.paho.client.mqttv3.MqttException;
+import org.eclipse.paho.client.mqttv3.MqttMessage;
+
+import java.io.UnsupportedEncodingException;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -69,6 +85,33 @@ public class MainActivity extends AppCompatActivity {
                 } else {
                     checaEstadoBluetooth();
                 }
+            }
+        });
+
+        listView.setOnItemClickListener(new AdapterView.OnItemClickListener() {
+            @Override
+            public void onItemClick(AdapterView<?> parent, View view, final int position, long id) {
+                AlertDialog.Builder dialog = new AlertDialog.Builder(MainActivity.this);
+                dialog.setTitle("Conexão com a nuvem");
+                dialog.setMessage("Deseja enviar os dados desse beacon para a nuvem?");
+                dialog.setIcon(android.R.drawable.ic_menu_send);
+                dialog.setCancelable(false);
+
+                dialog.setPositiveButton("Sim", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        String info = listView.getItemAtPosition(position).toString();
+                        conectar(info);
+                    }
+                });
+
+                dialog.setNegativeButton("Não", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        Toast.makeText(getApplicationContext(), "Item não enviado pra nuvem", Toast.LENGTH_SHORT).show();
+                    }
+                });
+                dialog.show();
             }
         });
 
@@ -154,7 +197,8 @@ public class MainActivity extends AppCompatActivity {
                 // mostra na tela os valores lidos
                 listAdapter.add("Nome: " + bluetoothDevice.getName() + "\n"
                         + "Endereco: " + bluetoothDevice.getAddress() + "\n"
-                        + "RSSI: " + rssi + " dB");
+                        + "RSSI: " + rssi + " dB"
+                );
                 listAdapter.notifyDataSetChanged();
             } else if (bluetoothAdapter.ACTION_DISCOVERY_FINISHED.equals(acao)){
                 // se a busca foi finalizada pelo adaptador, muda o texto do botao
@@ -165,4 +209,91 @@ public class MainActivity extends AppCompatActivity {
             }
         }
     };
+
+    public void conectar(final String mensagem){
+
+        String clienteId = MqttClient.generateClientId();
+        final MqttAndroidClient cliente =
+                new MqttAndroidClient(this, "tcp://postman.cloudmqtt.com:16813", clienteId);
+        MqttConnectOptions config = new MqttConnectOptions();
+        config.setMqttVersion(MqttConnectOptions.MQTT_VERSION_3_1_1);
+        config.setCleanSession(false);
+        config.setUserName("mdmtsoex");
+        config.setPassword("6HI57lUm0KCX".toCharArray());
+        try {
+            IMqttToken token = cliente.connect(config);
+            token.setActionCallback(new IMqttActionListener() {
+                @Override
+                public void onSuccess(IMqttToken asyncActionToken) {
+                    // conectou com o broker
+                    Log.d("file", "onSuccess");
+                    String message = mensagem;
+                    publish(cliente, message);
+                    cliente.setCallback(new MqttCallback() {
+                        @Override
+                        public void connectionLost(Throwable cause) {
+                            // conexao perdida
+                        }
+                        @Override
+                        public void messageArrived(String topic, MqttMessage message) throws Exception {
+                            Log.d("file", message.toString());
+                            // recebendo mensagem
+                        }
+                        @Override
+                        public void deliveryComplete(IMqttDeliveryToken token) {
+                            // envio completado
+                            Toast.makeText(getApplicationContext(), "Item enviado pra nuvem", Toast.LENGTH_LONG).show();
+                        }
+                    });
+                }
+
+                @Override
+                public void onFailure(IMqttToken asyncActionToken, Throwable exception) {
+                    // conexao falhou
+                    Log.d("file", "onFailure");
+                    Toast.makeText(MainActivity.this, "Conexão não foi feita com sucesso", Toast.LENGTH_LONG).show();
+                }
+            });
+        } catch (MqttException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void publish(MqttAndroidClient cliente, String payload)
+    {
+        // publica no topico "beacons/leitura" a mensagem
+        String topico = "beacons/leitura";
+        byte[] payloadByte = new byte[0];
+        try {
+            payloadByte = payload.getBytes("UTF-8");
+            MqttMessage mensagem = new MqttMessage(payloadByte);
+            cliente.publish(topico, mensagem);
+        } catch (UnsupportedEncodingException | MqttException e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void subscribe(MqttAndroidClient cliente, String topico)
+    {
+        int qos = 1;
+        try {
+            IMqttToken subToken = cliente.subscribe(topico, qos);
+            subToken.setActionCallback(new IMqttActionListener() {
+
+                @Override
+                public void onSuccess(IMqttToken asyncActionToken) {
+                    // deu certo a inscricao
+                    Toast.makeText(MainActivity.this, "Inscrito com sucesso", Toast.LENGTH_LONG).show();
+                }
+
+                @Override
+                public void onFailure(IMqttToken asyncActionToken, Throwable exception) {
+                    // inscricao falhou
+                    Toast.makeText(MainActivity.this, "Inscricao falhou", Toast.LENGTH_LONG).show();
+                }
+            });
+        } catch (MqttException e) {
+            e.printStackTrace();
+        }
+    }
 }
